@@ -23,7 +23,7 @@ python scripts/MDA.py model=ViT-B-16
 python scripts/MDA.py model=ViT-L-14
 ```
 
-Generalization experiments
+### CLIP Generalization experiments
 
 Evaluate our method (MDA) —— both TA and AM
 
@@ -40,7 +40,7 @@ python scripts/MDA.py \
     model=ViT-B-32
 ```
 
-## Flan-T5 Experiments
+### Flan-T5 Experiments
 
 Evaluate our method (MDA)
 
