@@ -1,0 +1,83 @@
+defaults:
+  - hydra: default
+  - _self_
+
+fast_dev_run: false
+
+exp_name: null
+version: null
+
+model: "ViT-B-32"
+device: cuda
+data_location: ???
+eval_datasets: null
+train_dataset: null
+test_datasets:
+  - SUN397
+  - Cars
+  - RESISC45
+  - EuroSAT
+  - SVHN
+  - GTSRB
+  - MNIST
+  - DTD
+
+task20_datasets:
+  - SUN397
+  - Cars
+  - RESISC45
+  - EuroSAT
+  - SVHN
+  - GTSRB
+  - MNIST
+  - DTD
+  - Flowers102
+  - PCAM
+  - FER2013
+  - OxfordIIITPet
+  - STL10
+  - CIFAR100
+  - CIFAR10
+  - Food101
+  - FashionMNIST
+  - EMNIST
+  - KMNIST
+  - RenderedSST2
+
+task14_datasets:
+  - SUN397
+  - Cars
+  - RESISC45
+  - EuroSAT
+  - SVHN
+  - GTSRB
+  - MNIST
+  - DTD
+  - Flowers102
+  - PCAM
+  - FER2013
+  - OxfordIIITPet
+  - STL10
+  - CIFAR100
+
+datasets: ${test_datasets}
+# datasets: ${task14_datasets}
+
+ls: 0.0
+warmup_length: 500
+epochs: 10
+load: null
+save: ???
+
+# optimizer
+lr: 0.001 # learning rate
+wd: 0  # weight decay
+
+# dataloader
+batch_size: 16
+num_workers: 4
+
+sam_retraining: false
+
+# corruption type on dataset (string)
+corruption: null
