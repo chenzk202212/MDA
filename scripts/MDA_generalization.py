@@ -1,6 +1,5 @@
 from _common import *
 import torch.multiprocessing
-# 在代码最开头设置共享策略
 torch.multiprocessing.set_sharing_strategy('file_system')
 log = logging.getLogger(__name__)
 
@@ -170,7 +169,7 @@ def main(cfg: DictConfig) -> None:
         ]
         check_parameterNamesMatch(task_vectors)
 
-    task_vectors = compute_and_sum_svd_mem_reduction(task_vectors, cfg)
+    task_vectors = compute_mda(task_vectors, cfg)
 
     
     task_vectors = [TaskVector(vector=task_vectors)]
