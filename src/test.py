@@ -248,13 +248,11 @@ class StanfordCars(ImageFolder):
             task_templates=[datasets.ImageClassification(image_column="image", label_column="label")],
         )
     
-# 初始化数据集
+
 dataset = StanfordCars(data_dir="/raid/czk/subspace_fusion/data")
 
-# 打印数据集信息
 print(dataset.info)
 
-# # 遍历训练集（示例）
 # for example in dataset["train"]:
 #     print(example["image"], example["label"])
 #     break
