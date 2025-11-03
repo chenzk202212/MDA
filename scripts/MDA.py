@@ -167,7 +167,7 @@ def main(cfg: DictConfig) -> None:
         ]
         check_parameterNamesMatch(task_vectors)
 
-    task_vectors = compute_and_sum_svd_mem_reduction(task_vectors, cfg)
+    task_vectors = compute_mda(task_vectors, cfg)
 
     
     task_vectors = [TaskVector(vector=task_vectors)]
