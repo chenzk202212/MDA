@@ -364,7 +364,6 @@ def matrix_cosine(a, b):
 #     diff_before_all = []
 #     diff_after_all = []
 
-#     # ===== 融合向量计算 =====
 #     for key in task_vectors[0]:
 #         original_shape = task_vectors[0][key].shape
 
@@ -409,10 +408,8 @@ def matrix_cosine(a, b):
 
 #             new_vector[key] = final[:, :feature_dim] if final.shape[1] > feature_dim else final
 #         else:
-#             # 对 1D 或特殊层平均
 #             new_vector[key] = torch.mean(torch.stack([v[key].to(device) for v in task_vectors]), dim=0)
 
-#     # 取均值
 #     diff_before = sum(diff_before_all) / len(diff_before_all) if diff_before_all else 0.0
 #     diff_after = sum(diff_after_all) / len(diff_after_all) if diff_after_all else 0.0
 
@@ -422,7 +419,7 @@ def matrix_cosine(a, b):
 #     return new_vector
 
 
-def compute_and_sum_svd_mem_reduction(task_vectors, config):
+def compute_mda(task_vectors, config):
 
     if isinstance(task_vectors, dict):
         task_vectors = list(task_vectors.values())
