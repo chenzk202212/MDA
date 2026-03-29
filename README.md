@@ -1,5 +1,3 @@
-# From Coefficients to Directions: Rethinking Model Merging with Directional Alignment
-
 ## 1.  setup environment 
 
 ```bash
