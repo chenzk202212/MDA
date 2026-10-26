@@ -6,6 +6,7 @@ parameter_alpha: 1.0 # Blend: (1-alpha)*reconstruction + alpha*ETF projection.
 # Feature-space alignment and optimization.
 lambda_init: 1.0
 alignment_alpha: 1.0
+assignment_temperature: 1.0 # Positive cosine soft-assignment temperature (gamma).
 alignment_warmup_epochs: 0
 rotation_weight: 0.0 # Multiplied by the current alignment_alpha.
 lr: 0.001
