@@ -85,6 +85,7 @@ def save_alignment_checkpoint(path, lambdas, rotations, optimizer, epoch, target
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save({
+        "adaptation_method": "argmax_pseudo_labels",
         "epoch": epoch,
         "lambdas": lambdas.detach().cpu(),
         "rotation_names": list(rotations.names),
@@ -99,6 +100,8 @@ def load_alignment_checkpoint(path, lambdas, rotations, optimizer, targets):
     required = {"epoch", "lambdas", "rotation_names", "rotations", "optimizer", "targets"}
     if not isinstance(state, dict) or not required.issubset(state):
         raise ValueError("Expected an alignment.pt checkpoint including rotations and optimizer state")
+    if state.get("adaptation_method") != "argmax_pseudo_labels":
+        raise ValueError("Resume requires an argmax pseudo-label checkpoint; start a new run")
     if tuple(state["rotation_names"]) != rotations.names:
         raise ValueError("Checkpoint task names/order do not match the experiment")
     if state["lambdas"].shape != lambdas.shape or state["targets"].shape != targets.shape:

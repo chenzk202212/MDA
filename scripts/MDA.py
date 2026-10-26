@@ -22,25 +22,6 @@ from src.mda_rotation import (
 )
 
 
-def get_class_means(model, dataloader, device):
-    model.eval()
-    with torch.no_grad():
-        feats = []
-        labels = []
-        for batch in dataloader:
-            x = batch['images'].to(device)
-            y = batch['labels'].to(device)
-            f = model(x)
-            feats.append(f)
-            labels.append(y)
-        feats = F.normalize(torch.cat(feats, dim=0), dim=1)
-        labels = torch.cat(labels, dim=0)
-        class_means = []
-        for c in torch.unique(labels):
-            class_feats = feats[labels == c]
-            class_means.append(class_feats.mean(dim=0))
-        return F.normalize(torch.stack(class_means), dim=1)  # [C, D]
-
 class AdaMerging(torch.nn.Module):
     def __init__(self, paramslist, model, names, exam_datasets, cfg):
         super(AdaMerging, self).__init__()
@@ -237,10 +218,10 @@ def main(cfg: DictConfig) -> None:
             batch = next(shuffled_test_loader_iters[dataset_name])
             batch = maybe_dictionarize(batch)
             x = batch["images"].to(cfg.device)
-            y = batch["labels"].to(cfg.device) + class_offset_map[dataset_name]
 
             with torch.set_grad_enabled(True):
-                outputs, feats = adamerging_mtl_model(x, dataset_name) 
+                outputs, feats = adamerging_mtl_model(x, dataset_name)
+                y = outputs.detach().argmax(dim=1) + class_offset_map[dataset_name]
                 R = rotations.matrix_for(dataset_name)
                 rotated_feats = rotations(feats, dataset_name)
                 rotated_feats = F.normalize(rotated_feats, dim=1)

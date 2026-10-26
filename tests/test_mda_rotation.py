@@ -168,6 +168,11 @@ class RotationTests(unittest.TestCase):
             wrong = TaskRotations(["another-task"], 3)
             with self.assertRaisesRegex(ValueError, "task names"):
                 load_alignment_checkpoint(path, new_coef, wrong, new_optimizer, new_targets)
+            legacy = torch.load(path, weights_only=True)
+            del legacy["adaptation_method"]
+            torch.save(legacy, path)
+            with self.assertRaisesRegex(ValueError, "argmax pseudo-label"):
+                load_alignment_checkpoint(path, new_coef, restored, new_optimizer, new_targets)
 
     def test_both_training_entry_points_end_to_end_on_cpu(self):
         """Run real main loops with tiny fixed models and in-memory datasets."""
@@ -176,7 +181,19 @@ class RotationTests(unittest.TestCase):
                 with self.subTest(script=filename, rotation_weight=weight), tempfile.TemporaryDirectory(dir=ROOT) as folder:
                     self.run_entrypoint(filename, Path(folder), weight)
 
-    def run_entrypoint(self, filename, folder, rotation_weight):
+    def test_pseudo_label_training_ignores_ground_truth(self):
+        for filename in ("MDA.py", "MDA_generalization.py"):
+            states = []
+            for mode in ("missing", "original", "permuted"):
+                with self.subTest(script=filename, labels=mode), tempfile.TemporaryDirectory(dir=ROOT) as folder:
+                    torch.manual_seed(19)
+                    states.append(self.run_entrypoint(filename, Path(folder), 0.2, mode))
+            for state in states[1:]:
+                torch.testing.assert_close(state["lambdas"], states[0]["lambdas"], rtol=0, atol=0)
+                for name, matrix in state["rotations"].items():
+                    torch.testing.assert_close(matrix, states[0]["rotations"][name], rtol=0, atol=0)
+
+    def run_entrypoint(self, filename, folder, rotation_weight, label_mode="missing"):
         # Fake only external model/data IO; production training, loss, optimizer,
         # projection, checkpoint and evaluation forwarding execute unchanged.
         images = torch.randn(8, 3)
@@ -213,6 +230,22 @@ class RotationTests(unittest.TestCase):
                 self.vector = vector if vector is not None else {"weight": torch.eye(3) * 0.1}
 
         evaluations = []
+        predictions = []
+        alignment_labels = []
+
+        def entropy(logits):
+            predictions.append(logits.detach().argmax(1))
+            return -(logits.softmax(-1) * logits.log_softmax(-1)).sum(-1)
+
+        def check_alignment(features, pseudo_labels, targets):
+            expected = predictions[-1] + 2 * (len(alignment_labels) % 2)
+            torch.testing.assert_close(pseudo_labels, expected)
+            alignment_labels.append(pseudo_labels.clone())
+            return alignment_loss(features, pseudo_labels, targets)
+
+        def check_procrustes(features, pseudo_labels, targets, matrix):
+            torch.testing.assert_close(pseudo_labels, alignment_labels[-1])
+            return procrustes_penalty(features, pseudo_labels, targets, matrix)
 
         def evaluate(encoder, head, name, cfg, rotation=None):
             evaluations.append((name, None if rotation is None else rotation.detach().clone()))
@@ -233,19 +266,22 @@ class RotationTests(unittest.TestCase):
                          check_parameterNamesMatch=lambda vectors: None,
                          compute_mda=lambda vectors, cfg: vectors[0],
                          timeit_context=nullcontext, TaskRotations=TaskRotations,
-                         generate_etf=generate_etf, alignment_loss=alignment_loss,
-                         procrustes_penalty=procrustes_penalty,
+                         generate_etf=generate_etf, alignment_loss=check_alignment,
+                         procrustes_penalty=check_procrustes,
                          save_alignment_checkpoint=save_alignment_checkpoint,
                          load_alignment_checkpoint=load_alignment_checkpoint,
                          eval_single_dataset_preprocess_head=evaluate,
-                         softmax_entropy=lambda logits: -(logits.softmax(-1) * logits.log_softmax(-1)).sum(-1),
+                         softmax_entropy=entropy,
                          os=os, Path=Path, itertools=itertools, tqdm=lambda values: values,
                          pd=SimpleNamespace(DataFrame=lambda results: SimpleNamespace(to_csv=lambda *args, **kwargs: None)))
         extract_definitions(ROOT / "scripts" / filename, {"AdaMerging", "main"}, namespace)
         # The production main imports these two IO functions locally.
         common = SimpleNamespace(maybe_dictionarize=lambda batch: batch)
+        training_batch = {"images": images}
+        if label_mode != "missing":
+            training_batch["labels"] = labels if label_mode == "original" else labels.flip(0)
         registry = SimpleNamespace(get_dataset=lambda *args, **kwargs: SimpleNamespace(
-            classnames=["a", "b"], test_loader_shuffle=[{"images": images, "labels": labels}]))
+            classnames=["a", "b"], test_loader_shuffle=[training_batch]))
         cfg = SimpleNamespace(model="toy", device="cpu", sam_retraining=False,
                               datasets=task_names, seen_datasets=task_names, unseen_datasets=["unseen"],
                               num_workers=0, batch_size=8,
@@ -283,6 +319,8 @@ class RotationTests(unittest.TestCase):
         self.assertEqual(resumed["epoch"], 5)
         for matrix in resumed["rotations"].values():
             self.assert_proper(matrix)
+        self.assertEqual(len(alignment_labels), 10)
+        return resumed
 
 
 if __name__ == "__main__":

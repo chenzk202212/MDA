@@ -34,6 +34,8 @@ python scripts/MDA_flant5.py models=flan-t5-base
 python scripts/MDA_flant5.py models=flan-t5-base peft=lora-16
 ```
 
+Feature-space adaptation uses prediction argmax pseudo-labels for alignment and prototypes. Ground-truth labels are used only for evaluation.
+
 ## Hyperparameters
 
 Shared settings: `config/mda/default.yaml`. Override them from the command line:
