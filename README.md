@@ -1,3 +1,7 @@
+# Geometry-Aware Directional Alignment for Coherent Model Merging
+
+Our paper has been accepted at **NeurIPS 2026**!
+
 ## 1.  setup environment 
 
 ```bash
@@ -96,4 +100,7 @@ python -m unittest discover -s tests -v
 
 ## Acknowledgements
 
-Some of the code in this repository is based on https://github.com/EnnengYang/AdaMerging.
+Our code builds on the following codebases:
+
+- [AdaMerging](https://github.com/EnnengYang/AdaMerging)
+- [Task Singular Vectors](https://github.com/AntoAndGar/task_singular_vectors)
