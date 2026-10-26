@@ -85,11 +85,11 @@ python scripts/MDA_flant5.py models=flan-t5-base peft=lora-16 mda.k=0.125 mda.di
   adaptation iterations, adaptation/prototype batch sizes, and evaluation interval.
   Use positive integers for these counts and a nonnegative warmup duration.
 
-`config/mda/generalization.yaml` preserves the generalization script's original
+`config/mda/generalization.yaml` specifies a
 300-iteration warmup, `0.2` rotation multiplier, and 200-iteration evaluation
-interval. `config/mda/flan_t5.yaml` preserves its `0.0001` learning rate. The
+interval. `config/mda/flan_t5.yaml` uses a `0.0001` learning rate. The
 Flan-T5 script currently performs TA evaluation only; its commented-out AM loop
-is not enabled by these options. CLIP defaults remain 1000 iterations, learning
+is not enabled by these options. CLIP defaults are 1000 iterations, learning
 rate `0.001`, alignment weight `1.0`, and rotation weight `0.0`.
 
 Configuration checks (no models, datasets, or GPU required):
@@ -112,12 +112,12 @@ i.e. `features @ R.T`. It is fit separately per task, using unrotated class mean
 for classes present in that batch. `mda.rotation_weight=0.2` enables its penalty;
 the default CLIP value `0.0` disables that penalty but still trains rotations
 through entropy/alignment losses and enforces `SO(d)` after each update.
-The alignment target is fixed throughout training. When feature dimension is
+The alignment target remains constant throughout training. When feature dimension is
 below `C-1`, the normalized truncated simplex target is an approximation, not an
 exact simplex ETF.
 
 Each evaluation interval and the final training iteration save `alignment.pt`
-alongside the legacy coefficient-only `.pt` file in the result directory. The
+alongside the coefficient-only `.pt` file in the result directory. The
 alignment checkpoint includes learned coefficients, rotations and task order,
 Adam state, completed iteration count, and ETF targets. Resume with the same
 model and task configuration, for example:
@@ -127,8 +127,8 @@ python scripts/MDA.py mda.resume=results/ViT-B-32/layer_wise_adamerging/alignmen
 ```
 
 `mda.epochs` is the total desired iteration count, not the number of extra
-iterations after resuming. Legacy coefficient-only files cannot restore a
-rotation training session. Data-loader/RNG state is not checkpointed, so a
+iterations after resuming. Use `alignment.pt` to resume rotation training.
+Data-loader/RNG state is not checkpointed, so a
 resumed run does not promise the same minibatch sequence as an uninterrupted run.
 The tests above exercise real CPU tensor gradients, both entry-point loops with
 tiny models/data, proper Procrustes rotations, prediction consistency, and
