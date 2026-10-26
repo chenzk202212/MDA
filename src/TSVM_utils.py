@@ -466,7 +466,6 @@ def compute_mda(task_vectors, config):
             if feature_dim >= num_classes:
                 etf = build_etf_qr(d=feature_dim, c=num_classes).to(device)  # [758, feature_dim]
                 # etf = build_etf_svd(d=num_classes, c=feature_dim).to(device) 
-                etf = etf.T
             else:
                 etf = build_etf_svd(d=feature_dim, c=num_classes).to(device)  # [758, feature_dim]
             etf = F.normalize(etf, dim=0)
