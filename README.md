@@ -46,7 +46,6 @@ python scripts/MDA.py model=ViT-B-32 mda.dimension=2400 mda.alignment_alpha=0.8 
 - `mda.dimension`: parameter-space ETF reference class dimension; default `2400`.
 - `mda.parameter_alpha`: reconstruction/ETF blending weight; default `1.0`.
 - `mda.lambda_init`: initial merging coefficient; default `1.0`.
-- `mda.assignment_temperature`: unlabeled task-local cosine soft-assignment temperature; default `1.0`.
 - `mda.alignment_alpha`: feature alignment weight; default `1.0`.
 - `mda.rotation_weight`: Procrustes penalty multiplier; default `0.0`. The effective penalty weight is `rotation_weight * current_alignment_alpha`.
 - `mda.alignment_warmup_epochs`: alignment warmup iterations; default `0`.

@@ -17,7 +17,7 @@ from torch import nn
 import torch.nn.functional as F
 
 from src.mda_rotation import (
-    TaskRotations, proper_polar, optimal_rotation, generate_etf, soft_assignments, alignment_loss,
+    TaskRotations, proper_polar, optimal_rotation, generate_etf, alignment_loss,
     procrustes_penalty, save_alignment_checkpoint, load_alignment_checkpoint,
 )
 
@@ -87,11 +87,10 @@ class RotationTests(unittest.TestCase):
     def test_alignment_and_regularizer_have_finite_gradients(self):
         rotations = TaskRotations(["task"], 3)
         raw = torch.randn(9, 3, requires_grad=True)
-        targets = generate_etf(3, 5)
-        rotated = rotations(raw, "task")
-        assignments = soft_assignments(rotated, targets)
-        loss = alignment_loss(rotated, assignments, targets)
-        loss += 0.2 * procrustes_penalty(raw, assignments, targets, rotations.matrix_for("task"))
+        labels = torch.tensor([0, 1, 0, 1, 0, 1, 0, 1, 0])
+        targets = generate_etf(3, 5)  # Several classes absent from this batch.
+        loss = alignment_loss(rotations(raw, "task"), labels, targets)
+        loss += 0.2 * procrustes_penalty(raw, labels, targets, rotations.matrix_for("task"))
         loss.backward()
         self.assertTrue(torch.isfinite(raw.grad).all())
         self.assertGreater(rotations.matrix_for("task").grad.norm().item(), 0)
@@ -101,48 +100,6 @@ class RotationTests(unittest.TestCase):
         features = torch.randn(5, 3)
         self.assertIsNone(rotations.matrix_for("unseen"))
         torch.testing.assert_close(rotations(features, "unseen"), features)
-
-    def test_soft_alignment_matches_paper_value_and_gradient(self):
-        features = torch.randn(5, 3, dtype=torch.float64, requires_grad=True)
-        targets = generate_etf(3, 5).double()[1:4]
-        temperature = 0.37
-        q = soft_assignments(features, targets, temperature)
-        normalized = F.normalize(features, dim=1)
-        expected_q = torch.softmax(normalized @ targets.T / temperature, dim=1)
-        torch.testing.assert_close(q, expected_q)
-        torch.testing.assert_close(q.sum(1), torch.ones(5, dtype=q.dtype))
-        expected = (expected_q * (normalized[:, None] - targets[None]).square().sum(-1)).sum(1).mean()
-        actual = alignment_loss(features, q, targets)
-        torch.testing.assert_close(actual, expected)
-        actual_gradient = torch.autograd.grad(actual, features, retain_graph=True)[0]
-        torch.testing.assert_close(actual_gradient, torch.autograd.grad(expected, features)[0])
-        self.assertTrue(torch.autograd.gradcheck(
-            lambda x: alignment_loss(x, soft_assignments(x, targets, temperature), targets),
-            (features,),
-        ))
-
-    def test_soft_prototypes_match_paper_and_handle_zero_mass(self):
-        raw = torch.randn(5, 3, dtype=torch.float64)
-        targets = generate_etf(3, 4).double()
-        q = torch.tensor([[.8, .2, 0., 0.], [.3, .7, 0., 0.], [.5, .5, 0., 0.],
-                          [.9, .1, 0., 0.], [.2, .8, 0., 0.]], dtype=raw.dtype, requires_grad=True)
-        matrix = nn.Parameter(torch.eye(3, dtype=raw.dtype))
-        means = q[:, :2].detach().T @ F.normalize(raw, dim=1) / q[:, :2].detach().sum(0)[:, None]
-        expected_rotation = optimal_rotation(means, targets[:2])
-        actual = procrustes_penalty(raw, q, targets, matrix)
-        torch.testing.assert_close(actual, (matrix - expected_rotation).square().sum())
-        actual.backward()
-        self.assertIsNone(q.grad)  # The Procrustes reference is a detached target.
-        self.assertTrue(torch.isfinite(matrix.grad).all())
-
-    def test_assignment_temperature_validation_and_small_temperature(self):
-        features = torch.eye(3)
-        for temperature in (0., -1., float('nan'), float('inf')):
-            with self.subTest(temperature=temperature), self.assertRaises(ValueError):
-                soft_assignments(features, features, temperature)
-        q = soft_assignments(features, features, 1e-6)
-        self.assertTrue(torch.isfinite(q).all())
-        torch.testing.assert_close(q, torch.eye(3))
 
     def test_real_evaluator_uses_the_same_rotation_convention(self):
         namespace = {"torch": torch, "F": F}
@@ -183,11 +140,11 @@ class RotationTests(unittest.TestCase):
         optimizer = torch.optim.Adam([coefficient] + list(rotations.parameters()), lr=0.03)
         source = torch.randn(12, 3)
         targets = generate_etf(3, 4)
+        labels = torch.arange(12) % 4
 
         def step(coef, rots, optim, refs):
             optim.zero_grad()
-            features = rots(source * coef, "task")
-            loss = alignment_loss(features, soft_assignments(features, refs), refs) + (coef - 0.4).square().sum()
+            loss = alignment_loss(rots(source * coef, "task"), labels, refs) + (coef - 0.4).square().sum()
             loss.backward()
             optim.step()
             rots.project_()
@@ -211,11 +168,6 @@ class RotationTests(unittest.TestCase):
             wrong = TaskRotations(["another-task"], 3)
             with self.assertRaisesRegex(ValueError, "task names"):
                 load_alignment_checkpoint(path, new_coef, wrong, new_optimizer, new_targets)
-            legacy = torch.load(path, weights_only=True)
-            del legacy["adaptation_method"]
-            torch.save(legacy, path)
-            with self.assertRaisesRegex(ValueError, "unlabeled soft-assignment"):
-                load_alignment_checkpoint(path, new_coef, restored, new_optimizer, new_targets)
 
     def test_both_training_entry_points_end_to_end_on_cpu(self):
         """Run real main loops with tiny fixed models and in-memory datasets."""
@@ -224,19 +176,7 @@ class RotationTests(unittest.TestCase):
                 with self.subTest(script=filename, rotation_weight=weight), tempfile.TemporaryDirectory(dir=ROOT) as folder:
                     self.run_entrypoint(filename, Path(folder), weight)
 
-    def test_training_is_invariant_to_missing_or_changed_labels(self):
-        for filename in ("MDA.py", "MDA_generalization.py"):
-            states = []
-            for label_mode in ("missing", "original", "permuted"):
-                with self.subTest(script=filename, labels=label_mode), tempfile.TemporaryDirectory(dir=ROOT) as folder:
-                    torch.manual_seed(19)
-                    states.append(self.run_entrypoint(filename, Path(folder), 0.2, label_mode))
-            for state in states[1:]:
-                torch.testing.assert_close(state["lambdas"], states[0]["lambdas"], rtol=0, atol=0)
-                for name, matrix in state["rotations"].items():
-                    torch.testing.assert_close(matrix, states[0]["rotations"][name], rtol=0, atol=0)
-
-    def run_entrypoint(self, filename, folder, rotation_weight, label_mode="missing"):
+    def run_entrypoint(self, filename, folder, rotation_weight):
         # Fake only external model/data IO; production training, loss, optimizer,
         # projection, checkpoint and evaluation forwarding execute unchanged.
         images = torch.randn(8, 3)
@@ -293,7 +233,7 @@ class RotationTests(unittest.TestCase):
                          check_parameterNamesMatch=lambda vectors: None,
                          compute_mda=lambda vectors, cfg: vectors[0],
                          timeit_context=nullcontext, TaskRotations=TaskRotations,
-                         generate_etf=generate_etf, soft_assignments=soft_assignments, alignment_loss=alignment_loss,
+                         generate_etf=generate_etf, alignment_loss=alignment_loss,
                          procrustes_penalty=procrustes_penalty,
                          save_alignment_checkpoint=save_alignment_checkpoint,
                          load_alignment_checkpoint=load_alignment_checkpoint,
@@ -304,18 +244,15 @@ class RotationTests(unittest.TestCase):
         extract_definitions(ROOT / "scripts" / filename, {"AdaMerging", "main"}, namespace)
         # The production main imports these two IO functions locally.
         common = SimpleNamespace(maybe_dictionarize=lambda batch: batch)
-        training_batch = {"images": images}
-        if label_mode != "missing":
-            training_batch["labels"] = labels if label_mode == "original" else labels.flip(0)
         registry = SimpleNamespace(get_dataset=lambda *args, **kwargs: SimpleNamespace(
-            classnames=["a", "b"], test_loader_shuffle=[training_batch]))
+            classnames=["a", "b"], test_loader_shuffle=[{"images": images, "labels": labels}]))
         cfg = SimpleNamespace(model="toy", device="cpu", sam_retraining=False,
                               datasets=task_names, seen_datasets=task_names, unseen_datasets=["unseen"],
                               num_workers=0, batch_size=8,
                               mda=SimpleNamespace(lambda_init=1.0, lr=0.02, betas=[0.9, 0.999],
                                                   weight_decay=0., epochs=3, batch_size=8, prototype_batch_size=4,
                                                   eval_interval=2, alignment_warmup_epochs=0,
-                                                  alignment_alpha=1., assignment_temperature=1., rotation_weight=rotation_weight, resume=None))
+                                                  alignment_alpha=1., rotation_weight=rotation_weight, resume=None))
         real_load = torch.load
 
         def model_load(path, *args, **kwargs):
@@ -346,7 +283,6 @@ class RotationTests(unittest.TestCase):
         self.assertEqual(resumed["epoch"], 5)
         for matrix in resumed["rotations"].values():
             self.assert_proper(matrix)
-        return resumed
 
 
 if __name__ == "__main__":

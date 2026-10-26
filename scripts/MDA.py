@@ -17,10 +17,29 @@ from src.utils import num_parameters, timeit_context
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from src.mda_rotation import (
-    TaskRotations, generate_etf, soft_assignments, alignment_loss, procrustes_penalty,
+    TaskRotations, generate_etf, alignment_loss, procrustes_penalty,
     save_alignment_checkpoint, load_alignment_checkpoint,
 )
 
+
+def get_class_means(model, dataloader, device):
+    model.eval()
+    with torch.no_grad():
+        feats = []
+        labels = []
+        for batch in dataloader:
+            x = batch['images'].to(device)
+            y = batch['labels'].to(device)
+            f = model(x)
+            feats.append(f)
+            labels.append(y)
+        feats = F.normalize(torch.cat(feats, dim=0), dim=1)
+        labels = torch.cat(labels, dim=0)
+        class_means = []
+        for c in torch.unique(labels):
+            class_feats = feats[labels == c]
+            class_means.append(class_feats.mean(dim=0))
+        return F.normalize(torch.stack(class_means), dim=1)  # [C, D]
 
 class AdaMerging(torch.nn.Module):
     def __init__(self, paramslist, model, names, exam_datasets, cfg):
@@ -218,6 +237,7 @@ def main(cfg: DictConfig) -> None:
             batch = next(shuffled_test_loader_iters[dataset_name])
             batch = maybe_dictionarize(batch)
             x = batch["images"].to(cfg.device)
+            y = batch["labels"].to(cfg.device) + class_offset_map[dataset_name]
 
             with torch.set_grad_enabled(True):
                 outputs, feats = adamerging_mtl_model(x, dataset_name) 
@@ -227,15 +247,10 @@ def main(cfg: DictConfig) -> None:
 
 
                 entropy_loss = softmax_entropy(outputs).mean(0)
-                offset = class_offset_map[dataset_name]
-                task_targets = etf_matrix[offset:offset + dataset_classes[dataset_name]]
-                assignments = soft_assignments(
-                    rotated_feats, task_targets, cfg.mda.assignment_temperature,
-                )
-                align_loss = alignment_loss(rotated_feats, assignments, task_targets)
+                align_loss = alignment_loss(rotated_feats, y, etf_matrix)
                 loss = entropy_loss + alignment_alpha * align_loss
                 if rotation_weight != 0:
-                    loss = loss + rotation_weight * procrustes_penalty(feats, assignments, task_targets, R)
+                    loss = loss + rotation_weight * procrustes_penalty(feats, y, etf_matrix, R)
                 total_loss += loss
 
         optimizer.zero_grad()

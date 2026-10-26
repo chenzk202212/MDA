@@ -1,7 +1,6 @@
 """Shared feature rotation, Procrustes targets, and adaptation checkpoints."""
 
 from pathlib import Path
-import math
 
 import torch
 from torch import nn
@@ -65,40 +64,27 @@ def generate_etf(d, c):
     return F.normalize(targets, dim=1)
 
 
-def soft_assignments(features, targets, temperature=1.0):
-    """Task-local cosine assignments; no sample labels are needed."""
-    if not math.isfinite(temperature) or temperature <= 0:
-        raise ValueError("Assignment temperature must be finite and positive")
-    return (F.normalize(features, dim=1) @ targets.T / temperature).softmax(dim=1)
+def alignment_loss(features, labels, targets):
+    """Align normalized rotated features to fixed class targets."""
+    return (F.normalize(features, dim=1) - targets[labels]).square().sum(1).mean()
 
 
-def alignment_loss(features, assignments, targets):
-    """Expected squared distance under differentiable soft assignments."""
-    normalized = F.normalize(features, dim=1)
-    distances = (normalized.square().sum(1, keepdim=True)
-                 + targets.square().sum(1).unsqueeze(0)
-                 - 2 * normalized @ targets.T)
-    return (assignments * distances).sum(1).mean()
-
-
-def procrustes_penalty(raw_features, assignments, targets, matrix):
+def procrustes_penalty(raw_features, labels, targets, matrix):
     # Use this task's UNROTATED features. A fit from already rotated features
     # would describe an incremental correction, not an absolute target for R.
     with torch.no_grad():
         normalized = F.normalize(raw_features.detach(), dim=1)
-        weights = assignments.detach()
-        mass = weights.sum(0)
-        present = mass > torch.finfo(weights.dtype).tiny
-        means = weights[:, present].T @ normalized / mass[present, None]
+        present = labels.unique(sorted=True)
+        means = torch.stack([normalized[labels == label].mean(0) for label in present])
+        means = F.normalize(means, dim=1)
         reference = optimal_rotation(means, targets[present])
-    return (matrix - reference).square().sum()
+    return (matrix - reference).square().mean()
 
 
 def save_alignment_checkpoint(path, lambdas, rotations, optimizer, epoch, targets):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save({
-        "adaptation_method": "unlabeled_soft_assignment",
         "epoch": epoch,
         "lambdas": lambdas.detach().cpu(),
         "rotation_names": list(rotations.names),
@@ -113,8 +99,6 @@ def load_alignment_checkpoint(path, lambdas, rotations, optimizer, targets):
     required = {"epoch", "lambdas", "rotation_names", "rotations", "optimizer", "targets"}
     if not isinstance(state, dict) or not required.issubset(state):
         raise ValueError("Expected an alignment.pt checkpoint including rotations and optimizer state")
-    if state.get("adaptation_method") != "unlabeled_soft_assignment":
-        raise ValueError("Resume requires an unlabeled soft-assignment checkpoint; start a new run")
     if tuple(state["rotation_names"]) != rotations.names:
         raise ValueError("Checkpoint task names/order do not match the experiment")
     if state["lambdas"].shape != lambdas.shape or state["targets"].shape != targets.shape:

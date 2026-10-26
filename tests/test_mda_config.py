@@ -62,11 +62,6 @@ class MDAConfigTests(unittest.TestCase):
         self.assertEqual((generalization.eval_interval, generalization.alignment_warmup_epochs, generalization.rotation_weight), (200, 300, 0.2))
         self.assertEqual(flan.lr, 0.0001)
 
-    def test_soft_assignment_temperature_config(self):
-        self.assertEqual(self.compose().mda.assignment_temperature, 1.0)
-        self.assertEqual(self.compose(overrides=["mda.assignment_temperature=0.2"]).mda.assignment_temperature, 0.2)
-        self.assertEqual(self.compose("clip_generalization_exp1").mda.assignment_temperature, 1.0)
-
     def test_flan_merge_forwards_config_to_mda(self):
         # Exercise the actual adapter without importing GPU/model dependencies.
         tree = ast.parse((ROOT / "src/task_wise_fusion_TSVM.py").read_text())
