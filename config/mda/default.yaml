@@ -1,6 +1,5 @@
-# Parameter-space alignment. Defaults reproduce the original implementation.
-k: null # Absolute per-layer SVD rank; overrides sv_reduction when set.
-sv_reduction: 0.125 # k = floor(min(layer.shape) * sv_reduction)
+# Parameter-space alignment.
+k: null # Retention fraction: null automatically uses 1 / actual merged task count.
 dimension: 2400 # ETF reference class dimension, NOT the encoder feature width.
 parameter_alpha: 1.0 # Blend: (1-alpha)*reconstruction + alpha*ETF projection.
 

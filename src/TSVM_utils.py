@@ -445,7 +445,7 @@ def compute_mda(task_vectors, config):
             output_dim = original_shape[0]
             feature_dim = original_shape[1]
             print('feature_dim', feature_dim)
-            reduced_len = resolve_rank(original_shape, options)
+            reduced_len = resolve_rank(original_shape, options, len(task_vectors))
 
             sum_u = torch.zeros((output_dim, reduced_len * len(task_vectors)), device=device)
             sum_s = torch.zeros((reduced_len * len(task_vectors)), device=device)

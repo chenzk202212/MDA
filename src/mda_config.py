@@ -10,20 +10,17 @@ def positive_integer(value, name):
     return int(value)
 
 
-def resolve_rank(shape, options):
-    """Select an explicit rank or a fraction of the layer's available SVD rank."""
+def resolve_rank(shape, options, num_tasks):
+    """Use k=1/T by default; k is a retention fraction, not an absolute rank."""
+    num_tasks = positive_integer(num_tasks, "number of merged tasks")
     max_rank = min(shape)
-    if options.k is not None:
-        rank = positive_integer(options.k, "mda.k")
-    else:
-        fraction = options.sv_reduction
-        if (isinstance(fraction, bool) or not isinstance(fraction, Real)
-                or not math.isfinite(fraction) or not 0 < fraction <= 1):
-            raise ValueError("mda.sv_reduction must be in (0, 1]")
-        rank = max(1, int(max_rank * fraction))
-    if rank > max_rank:
-        raise ValueError(f"mda.k={rank} exceeds the layer's available rank {max_rank}")
-    return rank
+    if options.k is None:
+        return max(1, max_rank // num_tasks)
+    fraction = options.k
+    if (isinstance(fraction, bool) or not isinstance(fraction, Real)
+            or not math.isfinite(fraction) or not 0 < fraction <= 1):
+        raise ValueError("mda.k must be a retention fraction in (0, 1], or null for 1/T")
+    return max(1, int(max_rank * fraction))
 
 
 def validate_parameter_options(options):
