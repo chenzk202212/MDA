@@ -15,3 +15,4 @@ epochs: 1000
 batch_size: 16
 prototype_batch_size: 4
 eval_interval: 500
+resume: null # Path to an alignment checkpoint; use the same model/task config.

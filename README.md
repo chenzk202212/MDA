@@ -98,6 +98,42 @@ Configuration checks (no models, datasets, or GPU required):
 python -m unittest discover -s tests -v
 ```
 
+## Feature-space rotation training
+
+Both CLIP entry points optimize the merging coefficients and task-specific rotation
+matrices. Rotated features feed the frozen classification heads during training
+and evaluation. After every Adam step, each matrix is projected onto `SO(d)`
+(orthogonal with determinant `+1`). This projection adds a per-task SVD cost.
+Unseen tasks in generalization experiments use the merged encoder without a
+task-specific rotation; no unseen-task labels are used for adaptation.
+
+The Procrustes target follows the same convention as `F.linear(features, R)`,
+i.e. `features @ R.T`. It is fit separately per task, using unrotated class means
+for classes present in that batch. `mda.rotation_weight=0.2` enables its penalty;
+the default CLIP value `0.0` disables that penalty but still trains rotations
+through entropy/alignment losses and enforces `SO(d)` after each update.
+The alignment target is fixed throughout training. When feature dimension is
+below `C-1`, the normalized truncated simplex target is an approximation, not an
+exact simplex ETF.
+
+Each evaluation interval and the final training iteration save `alignment.pt`
+alongside the legacy coefficient-only `.pt` file in the result directory. The
+alignment checkpoint includes learned coefficients, rotations and task order,
+Adam state, completed iteration count, and ETF targets. Resume with the same
+model and task configuration, for example:
+
+```bash
+python scripts/MDA.py mda.resume=results/ViT-B-32/layer_wise_adamerging/alignment.pt mda.epochs=1500
+```
+
+`mda.epochs` is the total desired iteration count, not the number of extra
+iterations after resuming. Legacy coefficient-only files cannot restore a
+rotation training session. Data-loader/RNG state is not checkpointed, so a
+resumed run does not promise the same minibatch sequence as an uninterrupted run.
+The tests above exercise real CPU tensor gradients, both entry-point loops with
+tiny models/data, proper Procrustes rotations, prediction consistency, and
+checkpoint restoration; they do not reproduce full CLIP benchmark accuracies.
+
 ## Acknowledgements
 
 Our code builds on the following codebases:

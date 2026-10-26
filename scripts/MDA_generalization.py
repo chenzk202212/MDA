@@ -16,23 +16,12 @@ from src.task_wise_fusion import check_parameterNamesMatch
 from src.utils import num_parameters, timeit_context
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
+from src.mda_rotation import (
+    TaskRotations, generate_etf, alignment_loss, procrustes_penalty,
+    save_alignment_checkpoint, load_alignment_checkpoint,
+)
 
 
-
-# Generate ETF: [C, D]
-def generate_etf(d: int, c: int) -> torch.Tensor:
-    I = torch.eye(c)
-    J = torch.ones((c, c)) / c
-    P = I - J
-    U, _, _ = torch.linalg.svd(P)
-    etf = U[:, :d].T * np.sqrt(c / (c - 1))
-    return etf.T  # shape: [C, D]
-
-def optimal_rotation(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
-    M = B.T @ A
-    U, _, Vt = torch.linalg.svd(M)
-    R = Vt.T @ U.T
-    return R  # shape: [D, D]
 
 def get_class_means(model, dataloader, device):
     model.eval()
@@ -53,38 +42,6 @@ def get_class_means(model, dataloader, device):
             class_means.append(class_feats.mean(dim=0))
         return F.normalize(torch.stack(class_means), dim=1)  # [C, D]
 
-# Neural Collapse Terminus alignment loss
-def nct_alignment_loss(features: torch.Tensor, 
-                      labels: torch.Tensor, 
-                      etf_matrix: torch.Tensor,
-                      current_epoch: int,
-                      total_epochs: int) -> torch.Tensor:
-    features = F.normalize(features, dim=1)
-    
-    # Ensure labels are within valid range
-    assert torch.all(labels < etf_matrix.size(0)), f"Label values exceed ETF matrix dimension {etf_matrix.size(0)}"
-    
-    targets = etf_matrix[labels]
-    
-    # Calculate prototype evolution factor (eta in the paper)
-    eta = min(1.0, current_epoch / total_epochs)
-    
-    # If first epoch, initialize with nearest class mean
-    if current_epoch == 0:
-        # Calculate NCM prototypes
-        unique_labels = torch.unique(labels)
-        ncm_prototypes = torch.zeros_like(etf_matrix)
-        for label in unique_labels:
-            class_features = features[labels == label]
-            if len(class_features) > 0:
-                ncm_prototypes[label] = F.normalize(class_features.mean(dim=0), dim=0)
-        
-        # Blend between NCM and ETF based on eta
-        targets = ncm_prototypes[labels]
-    
-    return ((features - targets) ** 2).sum(dim=1).mean()
-
-
 class AdaMerging(torch.nn.Module):
     def __init__(self, paramslist, model, names, exam_datasets, cfg):
         super(AdaMerging, self).__init__()
@@ -92,6 +49,7 @@ class AdaMerging(torch.nn.Module):
         self.model = model
         self.names = names
         self.cfg = cfg
+        self.rotations = None
         self.pretrain_lambdas = torch.ones(len(paramslist[0]), 1)
         self.other_lambdas = torch.ones(1, len(paramslist) - 1) * 0.3 
     
@@ -101,6 +59,7 @@ class AdaMerging(torch.nn.Module):
         self.classifier = []
         for dataset_name in exam_datasets:
             classification_head = get_classification_head(cfg, dataset_name)
+            classification_head.requires_grad_(False)
             layer_name = "classifier_{}".format(dataset_name)
             self.add_module(layer_name, classification_head.to(cfg.device))
             self.classifier.append(layer_name)
@@ -121,7 +80,7 @@ class AdaMerging(torch.nn.Module):
     def get_image_encoder(self):
         alph = self.lambdas()
         params = tuple(sum(tuple(pi * lambdasi for pi, lambdasi in zip(p, alph[j].cpu()))) for j, p in enumerate(zip(*self.paramslist)))
-        params = tuple(p.cuda(0) for p in params)
+        params = tuple(p.to(self.cfg.device) for p in params)
         load_weights(self.model, self.names, params)
         return self.model
 
@@ -129,13 +88,14 @@ class AdaMerging(torch.nn.Module):
         alph = self.lambdas()
         params = tuple(sum(tuple(pi * lambdasi for pi, lambdasi in zip(p, alph[j].cpu()))) for j, p in enumerate(zip(*self.paramslist)))
 
-        params = tuple(p.cuda(0) for p in params)
+        params = tuple(p.to(self.cfg.device) for p in params)
         load_weights(self.model, self.names, params)
         feature = self.model(inp)
 
         layer_name = "classifier_{}".format(dataset_name)
         classification_head = getattr(self, layer_name)
-        out = classification_head(feature)
+        rotated = self.rotations(feature, dataset_name) if self.rotations is not None else feature
+        out = classification_head(rotated)
         return out,feature
 
 
@@ -191,16 +151,11 @@ def main(cfg: DictConfig) -> None:
     paramslist += [tuple(v.detach().requires_grad_(False).cpu() for _, v in tv.vector.items()) for i, tv in enumerate(task_vectors)]  # task vectors
     torch.cuda.empty_cache()
     adamerging_mtl_model = AdaMerging(paramslist, model, names, all_datasets, cfg=cfg)
-    with torch.no_grad():
-        test_input = torch.randn(1, 3, 224, 224).cuda()  # Assuming standard image size
-        feature = adamerging_mtl_model.model(test_input)
-        feature_dim = feature.shape[-1]
-
-    rotation_matrices = {
-    name: nn.Parameter(torch.eye(feature_dim, device=cfg.device)) 
-    for name in exam_datasets
-}   
-
+    # The encoder is functionalized above; infer width from its frozen head
+    # rather than running an encoder whose weights have not yet been loaded.
+    feature_dim = adamerging_mtl_model.get_classification_head(exam_datasets[0]).weight.shape[-1]
+    rotations = TaskRotations(exam_datasets, feature_dim, device=cfg.device)
+    adamerging_mtl_model.rotations = rotations
 
     from src.datasets.common import maybe_dictionarize
     from src.datasets.registry import get_dataset
@@ -219,7 +174,7 @@ def main(cfg: DictConfig) -> None:
     # Get number of classes for each dataset
     dataset_classes = {name: len(dataset.classnames) for name, dataset in datasets.items()}
     total_classes = sum(dataset_classes.values())
-    etf_matrix = generate_etf(feature_dim, total_classes).cuda()
+    etf_matrix = generate_etf(feature_dim, total_classes).to(cfg.device)
     class_offset_map = {}
     offset = 0
     for name in exam_datasets:
@@ -231,7 +186,13 @@ def main(cfg: DictConfig) -> None:
     print("collect_trainable_params:")
     print(list(adamerging_mtl_model.collect_trainable_params()))
 
-    optimizer = torch.optim.Adam(list(adamerging_mtl_model.collect_trainable_params()), lr=cfg.mda.lr, betas=tuple(cfg.mda.betas), weight_decay=cfg.mda.weight_decay)
+    optimizer = torch.optim.Adam(list(adamerging_mtl_model.collect_trainable_params()) + list(rotations.parameters()), lr=cfg.mda.lr, betas=tuple(cfg.mda.betas), weight_decay=cfg.mda.weight_decay)
+    start_epoch = 0
+    if cfg.mda.resume is not None:
+        start_epoch = load_alignment_checkpoint(
+            cfg.mda.resume, adamerging_mtl_model.last_layer_lambda,
+            rotations, optimizer, etf_matrix,
+        )
     from src.datasets.common import maybe_dictionarize
     from src.datasets.registry import get_dataset
 
@@ -247,11 +208,11 @@ def main(cfg: DictConfig) -> None:
     for dataset_name in all_datasets:
         image_encoder = adamerging_mtl_model.get_image_encoder()
         classification_head = adamerging_mtl_model.get_classification_head(dataset_name)
-        metrics = eval_single_dataset_preprocess_head(image_encoder, classification_head, dataset_name, cfg)
+        metrics = eval_single_dataset_preprocess_head(image_encoder, classification_head, dataset_name, cfg, rotation=rotations.matrix_for(dataset_name))
         Total_ACC += metrics["top1"]
         log.info("Eval: Epoch: " + str(0) + " dataset: " + str(dataset_name) + " ACC: " + str(metrics["top1"]))
 
-        results["epoch"].append(0 + 1)
+        results["epoch"].append(start_epoch)
         results["dataset"].append(dataset_name)
         results["acc"].append(metrics["top1"])
 
@@ -265,11 +226,9 @@ def main(cfg: DictConfig) -> None:
     shuffled_test_loader_iters = {dataset_name: iter(itertools.cycle(dataloader)) for dataset_name, dataloader in shuffled_test_loaders.items()}
     total_epochs = cfg.mda.epochs
 
-    for epoch in tqdm(range(total_epochs)):
+    for epoch in tqdm(range(start_epoch, total_epochs)):
         adamerging_mtl_model.train()
         total_loss = 0.0
-        all_features = []
-        all_labels = []
 
         warmup = cfg.mda.alignment_warmup_epochs
         alignment_alpha = cfg.mda.alignment_alpha * (min(1.0, epoch / warmup) if warmup > 0 else 1.0)
@@ -283,39 +242,31 @@ def main(cfg: DictConfig) -> None:
 
             with torch.set_grad_enabled(True):
                 outputs, feats = adamerging_mtl_model(x, dataset_name) 
-                R = rotation_matrices[dataset_name]
-                rotated_feats = F.linear(feats, R)
+                R = rotations.matrix_for(dataset_name)
+                rotated_feats = rotations(feats, dataset_name)
                 rotated_feats = F.normalize(rotated_feats, dim=1)
 
-                all_features.append(rotated_feats.detach())
-                all_labels.append(y)
                 entropy_loss = softmax_entropy(outputs).mean(0)
-                align_loss = nct_alignment_loss(rotated_feats, y, etf_matrix, epoch, total_epochs)
+                align_loss = alignment_loss(rotated_feats, y, etf_matrix)
                 loss = entropy_loss + alignment_alpha * align_loss
+                if rotation_weight != 0:
+                    loss = loss + rotation_weight * procrustes_penalty(feats, y, etf_matrix, R)
                 total_loss += loss
-
-        with torch.no_grad():
-            features = torch.cat(all_features)
-            labels = torch.cat(all_labels)
-            class_means = torch.stack([
-                F.normalize(features[labels == c].mean(0), dim=0) if (labels == c).any()
-                else torch.zeros(feature_dim, device=cfg.device)
-                for c in range(total_classes)
-            ])
-            optimal_R = optimal_rotation(class_means, etf_matrix)
-
-        rotation_reg = sum(((R - optimal_R.detach()) ** 2).mean() for R in rotation_matrices.values())
-        total_loss += rotation_weight * rotation_reg
 
         optimizer.zero_grad()
         total_loss.backward()
         optimizer.step()
+        rotations.project_()
 
 
         log.debug(list(adamerging_mtl_model.lambdas().data))
 
-        if ((epoch + 1) % cfg.mda.eval_interval) == 0:
+        if ((epoch + 1) % cfg.mda.eval_interval) == 0 or epoch + 1 == total_epochs:
             os.makedirs(results_path.parent / os.path.basename(results_path).split(".")[0], exist_ok=True)
+            save_alignment_checkpoint(
+                results_path.parent / os.path.basename(results_path).split(".")[0] / "alignment.pt",
+                adamerging_mtl_model.last_layer_lambda, rotations, optimizer, epoch + 1, etf_matrix,
+            )
             torch.save(
                 adamerging_mtl_model.lambdas().data,
                 results_path.parent / os.path.basename(results_path).split(".")[0] / os.path.basename(results_path).replace(".csv", ".pt"),
@@ -325,7 +276,7 @@ def main(cfg: DictConfig) -> None:
             for dataset_name in all_datasets:
                 image_encoder = adamerging_mtl_model.get_image_encoder()
                 classification_head = adamerging_mtl_model.get_classification_head(dataset_name)
-                metrics = eval_single_dataset_preprocess_head(image_encoder, classification_head, dataset_name, cfg)
+                metrics = eval_single_dataset_preprocess_head(image_encoder, classification_head, dataset_name, cfg, rotation=rotations.matrix_for(dataset_name))
                 Total_ACC += metrics["top1"]
                 log.info("Eval: Epoch: " + str(epoch) + " dataset: " + str(dataset_name) + " ACC: " + str(metrics["top1"]))
 
