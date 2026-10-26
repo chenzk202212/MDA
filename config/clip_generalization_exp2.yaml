@@ -1,4 +1,5 @@
 defaults:
+  - mda: generalization
   - hydra: default
   - clip_datasets_generalization_exp2
   - _self_

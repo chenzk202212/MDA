@@ -1,0 +1,18 @@
+# Parameter-space alignment. Defaults reproduce the original implementation.
+k: null # Absolute per-layer SVD rank; overrides sv_reduction when set.
+sv_reduction: 0.125 # k = floor(min(layer.shape) * sv_reduction)
+dimension: 2400 # ETF reference class dimension, NOT the encoder feature width.
+parameter_alpha: 1.0 # Blend: (1-alpha)*reconstruction + alpha*ETF projection.
+
+# Feature-space alignment and optimization.
+lambda_init: 1.0
+alignment_alpha: 1.0
+alignment_warmup_epochs: 0
+rotation_weight: 0.0 # Multiplied by the current alignment_alpha.
+lr: 0.001
+betas: [0.9, 0.999]
+weight_decay: 0.0
+epochs: 1000
+batch_size: 16
+prototype_batch_size: 4
+eval_interval: 500
