@@ -420,7 +420,7 @@ def matrix_cosine(a, b):
 #     return new_vector
 
 
-def compute_mda(task_vectors, config):
+def compute_and_sum_svd_mem_reduction(task_vectors, config):
 
     if isinstance(task_vectors, dict):
         task_vectors = list(task_vectors.values())
@@ -433,8 +433,11 @@ def compute_mda(task_vectors, config):
 
 
     device = config.device
+    n_tasks = len(task_vectors)
     options = config.mda
     num_classes, alpha = validate_parameter_options(options)
+    sv_reduction = 1 / n_tasks if options.k is None else options.k
+    print(f"MDA concat: n_tasks={n_tasks}, sv_reduction=1/{n_tasks}")
 
     new_vector = {}
 
@@ -445,7 +448,7 @@ def compute_mda(task_vectors, config):
             output_dim = original_shape[0]
             feature_dim = original_shape[1]
             print('feature_dim', feature_dim)
-            reduced_len = resolve_rank(original_shape, options, len(task_vectors))
+            reduced_len = resolve_rank(original_shape, options, n_tasks)
 
             sum_u = torch.zeros((output_dim, reduced_len * len(task_vectors)), device=device)
             sum_s = torch.zeros((reduced_len * len(task_vectors)), device=device)
@@ -464,11 +467,13 @@ def compute_mda(task_vectors, config):
             u_v, _, v_v = torch.linalg.svd(sum_v, full_matrices=False)
             reconstructed = torch.linalg.multi_dot((u_u, v_u, torch.diag(sum_s), u_v, v_v))  # 重建
             if feature_dim >= num_classes:
-                etf = build_etf_qr(d=feature_dim, c=num_classes).to(device)  # [758, feature_dim]
-                # etf = build_etf_svd(d=num_classes, c=feature_dim).to(device) 
-                etf = etf.T
+                # build_etf_qr already returns [C, feature_dim]; do NOT transpose again
+                # (extra .T makes etf [feature_dim, C] and breaks W @ etf.T @ etf on c_proj).
+                etf = build_etf_qr(d=feature_dim, c=num_classes).to(device)  # [C, feature_dim]
+                # etf = build_etf_svd(d=num_classes, c=feature_dim).to(device)
+                # etf = etf.T  # only needed for the svd line above
             else:
-                etf = build_etf_svd(d=feature_dim, c=num_classes).to(device)  # [758, feature_dim]
+                etf = build_etf_svd(d=feature_dim, c=num_classes).to(device)  # [C, feature_dim]
             etf = F.normalize(etf, dim=0)
 
 
@@ -485,6 +490,80 @@ def compute_mda(task_vectors, config):
             ]), dim=0)
 
     return new_vector
+
+def compute_and_sum_svd_mem_reduction_subspace_avg(task_vectors, config):
+    """MDA-style merge but aggregate task subspaces by averaging projectors U_t U_t^T
+    (and V_t^T V_t) instead of concatenating top-k components."""
+    if isinstance(task_vectors, dict):
+        task_vectors = list(task_vectors.values())
+    if not task_vectors:
+        raise ValueError("MDA requires at least one task vector")
+
+    if hasattr(task_vectors[0], "vector"):
+        task_vectors = [tv.vector for tv in task_vectors]
+
+    device = config.device
+    n_tasks = len(task_vectors)
+    options = config.mda
+    num_classes, alpha = validate_parameter_options(options)
+    sv_reduction = 1 / n_tasks if options.k is None else options.k
+    print(f"MDA subspace_avg: n_tasks={n_tasks}, sv_reduction=1/{n_tasks}")
+    new_vector = {}
+
+    for key in task_vectors[0]:
+        original_shape = task_vectors[0][key].shape
+        if len(original_shape) == 2 and "text_projection" not in key:
+            output_dim = original_shape[0]
+            feature_dim = original_shape[1]
+            reduced_len = resolve_rank(original_shape, options, n_tasks)
+            # Match concat capacity: keep up to k * T shared directions
+            shared_rank = min(output_dim, feature_dim, reduced_len * n_tasks)
+
+            P_u = torch.zeros((output_dim, output_dim), device=device)
+            P_v = torch.zeros((feature_dim, feature_dim), device=device)
+            W_lr_sum = torch.zeros((output_dim, feature_dim), device=device)
+
+            for task_vector in task_vectors:
+                vec = task_vector[key].to(device)
+                u, s, v = torch.linalg.svd(vec, full_matrices=False)
+                uk = u[:, :reduced_len]
+                sk = s[:reduced_len]
+                vk = v[:reduced_len, :]
+                P_u += uk @ uk.T
+                P_v += vk.T @ vk
+                W_lr_sum += uk @ torch.diag(sk) @ vk
+
+            P_u /= len(task_vectors)
+            P_v /= len(task_vectors)
+            W_mean = W_lr_sum / len(task_vectors)
+
+            # Orthonormal bases of averaged projectors
+            eval_u, evec_u = torch.linalg.eigh(P_u)
+            eval_v, evec_v = torch.linalg.eigh(P_v)
+            U_bar = evec_u[:, -shared_rank:]  # [out, r]
+            V_bar = evec_v[:, -shared_rank:]  # [in, r]
+
+            # Project mean low-rank task matrix onto averaged subspaces
+            reconstructed = U_bar @ (U_bar.T @ W_mean @ V_bar) @ V_bar.T
+
+            if feature_dim >= num_classes:
+                etf = build_etf_qr(d=feature_dim, c=num_classes).to(device)
+            else:
+                etf = build_etf_svd(d=feature_dim, c=num_classes).to(device)
+            etf = F.normalize(etf, dim=0)
+            etf_proj = reconstructed @ etf.T @ etf
+            final = (1 - alpha) * reconstructed + alpha * etf_proj
+            new_vector[key] = final[:, :feature_dim] if final.shape[1] > feature_dim else final
+        else:
+            new_vector[key] = torch.mean(
+                torch.stack([v[key].to(device) for v in task_vectors]), dim=0
+            )
+    return new_vector
+
+
+def compute_mda(task_vectors, config):
+    """Default MDA uses concatenation of task singular components."""
+    return compute_and_sum_svd_mem_reduction(task_vectors, config)
 
 
 ###############
