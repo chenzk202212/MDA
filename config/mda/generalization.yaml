@@ -1,0 +1,7 @@
+defaults:
+  - default
+  - _self_
+
+alignment_warmup_epochs: 300
+rotation_weight: 0.2
+eval_interval: 200

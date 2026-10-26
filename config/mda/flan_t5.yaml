@@ -1,0 +1,5 @@
+defaults:
+  - default
+  - _self_
+
+lr: 0.0001

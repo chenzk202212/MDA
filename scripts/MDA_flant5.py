@@ -63,12 +63,13 @@ class Program(_Program):
         # Initialize the task-wise weights
         self.init_task_wise_weights = get_task_wise_weights(
             num_models=len(task_vectors),
-            init_values=1.0,
+            init_values=self.cfg.mda.lambda_init,
         )
         model = TaskWiseMergedModel(
             pretrained_model=deepcopy(pretrained_model),
             task_wise_weight=deepcopy(self.init_task_wise_weights),
             task_vectors=task_vectors,
+            config=self.cfg,
         )
         self.model: TaskWiseMergedModel = self.fabric.setup_module(model)
 
@@ -104,7 +105,7 @@ class Program(_Program):
         self.model.task_wise_weight.data = deepcopy(self.init_task_wise_weights).to(self.model.task_wise_weight.device)
 
         results = defaultdict(list)
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-4, betas=(0.9, 0.999), weight_decay=0.0)
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.cfg.mda.lr, betas=tuple(self.cfg.mda.betas), weight_decay=self.cfg.mda.weight_decay)
 
         self.model.eval()
         self.model.merge_weights()

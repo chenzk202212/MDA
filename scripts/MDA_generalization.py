@@ -95,7 +95,7 @@ class AdaMerging(torch.nn.Module):
         self.pretrain_lambdas = torch.ones(len(paramslist[0]), 1)
         self.other_lambdas = torch.ones(1, len(paramslist) - 1) * 0.3 
     
-        last_layer_lambda = torch.ones(len(paramslist[0]), len(paramslist) - 1) 
+        last_layer_lambda = torch.full((len(paramslist[0]), len(paramslist) - 1), float(cfg.mda.lambda_init))
         self.last_layer_lambda = torch.nn.Parameter(last_layer_lambda)
 
         self.classifier = []
@@ -139,7 +139,7 @@ class AdaMerging(torch.nn.Module):
         return out,feature
 
 
-@hydra.main(config_path=str(CONFIG_DIR), config_name="clip_datasets_generalization_exp1", version_base=None)
+@hydra.main(config_path=str(CONFIG_DIR), config_name="clip_generalization_exp1", version_base=None)
     
 def main(cfg: DictConfig) -> None:
     cfg.save = str(CHECKPOINT_DIR / cfg.model)
@@ -194,7 +194,7 @@ def main(cfg: DictConfig) -> None:
     with torch.no_grad():
         test_input = torch.randn(1, 3, 224, 224).cuda()  # Assuming standard image size
         feature = adamerging_mtl_model.model(test_input)
-        # feature_dim = 512
+        feature_dim = feature.shape[-1]
 
     rotation_matrices = {
     name: nn.Parameter(torch.eye(feature_dim, device=cfg.device)) 
@@ -210,7 +210,7 @@ def main(cfg: DictConfig) -> None:
             dataset_name,
             pretrained_model.val_preprocess,
             location=cfg.data_location,
-            batch_size=4,
+            batch_size=cfg.mda.prototype_batch_size,
             num_workers=cfg.num_workers,
         )
         for dataset_name in exam_datasets
@@ -231,7 +231,7 @@ def main(cfg: DictConfig) -> None:
     print("collect_trainable_params:")
     print(list(adamerging_mtl_model.collect_trainable_params()))
 
-    optimizer = torch.optim.Adam(list(adamerging_mtl_model.collect_trainable_params()), lr=1e-3, betas=(0.9, 0.999), weight_decay=0.0)
+    optimizer = torch.optim.Adam(list(adamerging_mtl_model.collect_trainable_params()), lr=cfg.mda.lr, betas=tuple(cfg.mda.betas), weight_decay=cfg.mda.weight_decay)
     from src.datasets.common import maybe_dictionarize
     from src.datasets.registry import get_dataset
 
@@ -257,13 +257,13 @@ def main(cfg: DictConfig) -> None:
 
     datasets = {
         dataset_name: get_dataset(
-            dataset_name, pretrained_model.val_preprocess, location=cfg.data_location, batch_size=16, num_workers=cfg.num_workers
+            dataset_name, pretrained_model.val_preprocess, location=cfg.data_location, batch_size=cfg.mda.batch_size, num_workers=cfg.num_workers
         )
         for dataset_name in exam_datasets
     }
     shuffled_test_loaders: Dict[str, DataLoader] = {dataset_name: dataset.test_loader_shuffle for dataset_name, dataset in datasets.items()}
     shuffled_test_loader_iters = {dataset_name: iter(itertools.cycle(dataloader)) for dataset_name, dataloader in shuffled_test_loaders.items()}
-    total_epochs = 1000
+    total_epochs = cfg.mda.epochs
 
     for epoch in tqdm(range(total_epochs)):
         adamerging_mtl_model.train()
@@ -271,8 +271,9 @@ def main(cfg: DictConfig) -> None:
         all_features = []
         all_labels = []
 
-        alignment_alpha = min(1.0, epoch / 300) 
-        rotation_weight = 0.2*alignment_alpha
+        warmup = cfg.mda.alignment_warmup_epochs
+        alignment_alpha = cfg.mda.alignment_alpha * (min(1.0, epoch / warmup) if warmup > 0 else 1.0)
+        rotation_weight = cfg.mda.rotation_weight * alignment_alpha
 
         for dataset_name in exam_datasets:
             batch = next(shuffled_test_loader_iters[dataset_name])
@@ -313,7 +314,7 @@ def main(cfg: DictConfig) -> None:
 
         log.debug(list(adamerging_mtl_model.lambdas().data))
 
-        if ((epoch + 1) % 200) == 0:
+        if ((epoch + 1) % cfg.mda.eval_interval) == 0:
             os.makedirs(results_path.parent / os.path.basename(results_path).split(".")[0], exist_ok=True)
             torch.save(
                 adamerging_mtl_model.lambdas().data,

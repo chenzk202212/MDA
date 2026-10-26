@@ -86,11 +86,10 @@ def get_task_wise_weights(num_models: int, init_values: float = None):
 
 from . import TSVM_utils
 
-def fuse_weights_TSVM(state_dicts: List[StateDict], device: str) -> StateDict:
-    config = types.SimpleNamespace()
-    config.DATASETS = ["SUN397", "Cars", "RESISC45", "EuroSAT", "SVHN", "GTSRB", "MNIST", "DTD"]
-    config.device = device
-    return TSVM_utils.compute_and_sum_svd_mem_reduction(state_dicts, config)
+def fuse_weights_TSVM(state_dicts: List[StateDict], device: str, config) -> StateDict:
+    # Keep the full experiment configuration so MDA overrides also reach Flan-T5.
+    merge_config = types.SimpleNamespace(device=device, mda=config.mda)
+    return TSVM_utils.compute_mda(state_dicts, merge_config)
 
 
 
@@ -100,12 +99,14 @@ class TaskWiseMergedModel(nn.Module):
         pretrained_model: nn.Module,
         task_wise_weight: Tensor,
         task_vectors: List[StateDict],
+        config,
         clamp_weights: bool = True,
     ):
         super().__init__()
         self._model = (pretrained_model,)  # self._model should be on cpu
 
         self.task_wise_weight = nn.Parameter(task_wise_weight, requires_grad=True)
+        self.config = config
         self.task_vectors = task_vectors  # should be on cpu
         self.pretrained_state_dict: StateDict = self.model.state_dict(keep_vars=False)
         check_parameterNamesMatch(self.task_vectors)
@@ -123,9 +124,9 @@ class TaskWiseMergedModel(nn.Module):
             task_wise_weight = self.task_wise_weight
         device = task_wise_weight.device
         #task_vector = fuse_weights(task_wise_weight, self.task_vectors)
-        # task_vector = fuse_weights_TSVM(self.task_vectors, device)
+        # task_vector = fuse_weights_TSVM(self.task_vectors, device, self.config)
         
-        task_vector = fuse_weights_TSVM(self.task_vectors, device)
+        task_vector = fuse_weights_TSVM(self.task_vectors, device, self.config)
         self.merged_state_dict = {k: self.pretrained_state_dict[k].to(device, non_blocking=True) for k in self.pretrained_state_dict.keys()}
         for k in task_vector.keys():
             self.merged_state_dict[k] += task_vector[k]

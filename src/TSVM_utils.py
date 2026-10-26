@@ -4,6 +4,7 @@ import math
 import numpy as np
 import torch.nn.functional as F
 from src.task_vectors import *
+from src.mda_config import resolve_rank, validate_parameter_options
 
 def compute_svd_dict(task_vectors, config):
     """
@@ -424,14 +425,16 @@ def compute_mda(task_vectors, config):
     if isinstance(task_vectors, dict):
         task_vectors = list(task_vectors.values())
 
+    if not task_vectors:
+        raise ValueError("MDA requires at least one task vector")
+
     if hasattr(task_vectors[0], 'vector'):
         task_vectors = [tv.vector for tv in task_vectors]
 
 
     device = config.device
-    sv_reduction = 1 / 8
-    num_classes = 2400
-    alpha = 1.0
+    options = config.mda
+    num_classes, alpha = validate_parameter_options(options)
 
     new_vector = {}
 
@@ -442,7 +445,7 @@ def compute_mda(task_vectors, config):
             output_dim = original_shape[0]
             feature_dim = original_shape[1]
             print('feature_dim', feature_dim)
-            reduced_len = int(min(original_shape) * sv_reduction)
+            reduced_len = resolve_rank(original_shape, options, len(task_vectors))
 
             sum_u = torch.zeros((output_dim, reduced_len * len(task_vectors)), device=device)
             sum_s = torch.zeros((reduced_len * len(task_vectors)), device=device)

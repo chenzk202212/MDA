@@ -1,4 +1,5 @@
 defaults:
+  - mda: flan_t5
   - hydra: default
   - models: flan-t5-base
   - peft: nopeft
